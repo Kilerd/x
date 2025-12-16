@@ -1,0 +1,169 @@
+name: Build AnyStorage Release
+
+on:
+  repository_dispatch:
+    types: [build-anystorage-release]
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      tag: ${{ steps.extract.outputs.tag }}
+      is_prerelease: ${{ steps.extract.outputs.is_prerelease }}
+      ref: ${{ steps.extract.outputs.ref }}
+      sha: ${{ steps.extract.outputs.sha }}
+    steps:
+      - name: Extract payload data
+        id: extract
+        run: |
+          echo "version=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
+          echo "tag=${{ github.event.client_payload.tag }}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${{ github.event.client_payload.is_prerelease }}" >> $GITHUB_OUTPUT
+          echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
+          echo "sha=${{ github.event.client_payload.sha }}" >> $GITHUB_OUTPUT
+
+          echo "📦 Building AnyStorage ${{ github.event.client_payload.version }}"
+          echo "🏷️  Tag: ${{ github.event.client_payload.tag }}"
+          echo "🔖 Prerelease: ${{ github.event.client_payload.is_prerelease }}"
+          echo "📍 SHA: ${{ github.event.client_payload.sha }}"
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            platform: mac
+            arch: arm64
+            opendal_package: '@opendal/lib-darwin-arm64'
+            electron_arch: arm64
+          - os: windows-latest
+            platform: win
+            arch: x64
+            opendal_package: '@opendal/lib-win32-x64-msvc'
+            electron_arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            opendal_package: '@opendal/lib-linux-x64-gnu'
+            electron_arch: x64
+
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: kilerd/anystorage-app
+          ref: ${{ needs.prepare.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          # Clean both package-lock files to avoid npm optional dependencies bug (#4828)
+          # This ensures @opendal/lib-* packages are correctly installed
+          npm install
+          npm run postinstall
+
+      - name: Install platform-specific OpenDAL binding
+        shell: bash
+        run: |
+          npm install ${{ matrix.opendal_package }}@0.49.2
+          cd release/app
+          npm install ${{ matrix.opendal_package }}@0.49.2
+          echo "✅ Installed ${{ matrix.opendal_package }}"
+
+      - name: Build application
+        run: npm run build
+
+      - name: Package application
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ matrix.platform }}" = "mac" ]; then
+            npm exec electron-builder -- --mac --${{ matrix.electron_arch }} --publish never
+          elif [ "${{ matrix.platform }}" = "win" ]; then
+            npm exec electron-builder -- --win --${{ matrix.electron_arch }} --publish never
+          else
+            npm exec electron-builder -- --linux --${{ matrix.electron_arch }} --publish never
+          fi
+        shell: bash
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/build/*.dmg
+            release/build/*.exe
+            release/build/*.AppImage
+            release/build/latest*.yml
+            release/build/*.yaml
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure
+        run: ls -R artifacts
+
+      - name: Create GitHub Release in anystorage-release repository
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AnyStorage ${{ needs.prepare.outputs.version }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          repository: kilerd/anystorage-release
+          token: ${{ secrets.RELEASE_REPO_TOKEN }}
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          draft: false
+          generate_release_notes: false
+          body: |
+            # AnyStorage ${{ needs.prepare.outputs.version }}
+
+            Release artifacts for AnyStorage.
+
+            **Platforms:**
+            - macOS Apple Silicon (ARM64)
+            - Windows x64
+            - Linux x64 (AppImage)
+
+            ## Download
+
+            Download the appropriate installer for your platform below.
+
+            For more information, visit the [main repository](https://github.com/Kilerd/anystorage).
+
+            ---
+
+            🤖 Automated release from public CI workflow
+            📍 Source commit: ${{ needs.prepare.outputs.sha }}
+            🔗 [Build logs](https://github.com/kilerd/x/actions/runs/${{ github.run_id }})
+          files: |
+            artifacts/release-mac-arm64/*.dmg
+            artifacts/release-mac-arm64/latest*.yml
+            artifacts/release-win-x64/*.exe
+            artifacts/release-win-x64/latest*.yml
+            artifacts/release-linux-x64/*.AppImage
+            artifacts/release-linux-x64/latest*.yml
+          overwrite_files: true
+
+      - name: Release complete
+        run: |
+          echo "✅ Release ${{ needs.prepare.outputs.tag }} published to anystorage-release repository"
+          echo "🔗 https://github.com/kilerd/anystorage-release/releases/tag/${{ needs.prepare.outputs.tag }}"
