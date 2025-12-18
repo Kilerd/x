@@ -115,7 +115,7 @@ jobs:
       - name: Checkout private repository
         uses: actions/checkout@v4
         with:
-          repository: kilerd/anystorage-app
+          repository: kilerd/anystorage
           ref: ${{ needs.prepare.outputs.ref }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
@@ -207,7 +207,7 @@ jobs:
 
             Download the appropriate installer for your platform below.
 
-            For more information, visit the [main repository](https://github.com/Kilerd/anystorage).
+            For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release).
 
             ---
 
