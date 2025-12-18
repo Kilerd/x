@@ -1,8 +1,34 @@
 name: Build AnyStorage Release
 
 on:
+  # API 触发（保留原有方式）
   repository_dispatch:
     types: [build-anystorage-release]
+
+  # 手动触发（新增）
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.0.1-beta.7)'
+        required: true
+        type: string
+      tag:
+        description: 'Git tag name (e.g., v0.0.1-beta.7)'
+        required: true
+        type: string
+      is_prerelease:
+        description: 'Is this a prerelease?'
+        required: true
+        type: boolean
+        default: true
+      ref:
+        description: 'Git ref to checkout (leave empty to use tag)'
+        required: false
+        type: string
+      sha:
+        description: 'Commit SHA (optional, for tracking)'
+        required: false
+        type: string
 
 jobs:
   prepare:
@@ -17,16 +43,50 @@ jobs:
       - name: Extract payload data
         id: extract
         run: |
-          echo "version=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
-          echo "tag=${{ github.event.client_payload.tag }}" >> $GITHUB_OUTPUT
-          echo "is_prerelease=${{ github.event.client_payload.is_prerelease }}" >> $GITHUB_OUTPUT
-          echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
-          echo "sha=${{ github.event.client_payload.sha }}" >> $GITHUB_OUTPUT
+          # 判断触发方式并提取参数
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 手动触发：使用 inputs
+            VERSION="${{ github.event.inputs.version }}"
+            TAG="${{ github.event.inputs.tag }}"
+            IS_PRERELEASE="${{ github.event.inputs.is_prerelease }}"
+            REF="${{ github.event.inputs.ref }}"
+            SHA="${{ github.event.inputs.sha }}"
 
-          echo "📦 Building AnyStorage ${{ github.event.client_payload.version }}"
-          echo "🏷️  Tag: ${{ github.event.client_payload.tag }}"
-          echo "🔖 Prerelease: ${{ github.event.client_payload.is_prerelease }}"
-          echo "📍 SHA: ${{ github.event.client_payload.sha }}"
+            # 如果 ref 为空，使用 tag 作为 ref
+            if [ -z "$REF" ]; then
+              REF="$TAG"
+            fi
+
+            # 如果 sha 为空，设置为 N/A
+            if [ -z "$SHA" ]; then
+              SHA="N/A"
+            fi
+
+            echo "🖱️  Manual workflow trigger"
+          else
+            # API 触发：使用 client_payload
+            VERSION="${{ github.event.client_payload.version }}"
+            TAG="${{ github.event.client_payload.tag }}"
+            IS_PRERELEASE="${{ github.event.client_payload.is_prerelease }}"
+            REF="${{ github.event.client_payload.ref }}"
+            SHA="${{ github.event.client_payload.sha }}"
+
+            echo "🔗 Repository dispatch trigger"
+          fi
+
+          # 输出到 GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+
+          # 显示构建信息
+          echo "📦 Building AnyStorage $VERSION"
+          echo "🏷️  Tag: $TAG"
+          echo "🔖 Prerelease: $IS_PRERELEASE"
+          echo "📍 Ref: $REF"
+          echo "📍 SHA: $SHA"
 
   build:
     needs: prepare
