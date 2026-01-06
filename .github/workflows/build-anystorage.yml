@@ -125,6 +125,62 @@ jobs:
           node-version: 22
           cache: npm
 
+      # 在构建前自动将 tag 版本号写入 package.json
+      # 这样就无需在开发时手动同步版本号
+      - name: Install jq (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install jq -y
+
+      - name: Update version in package.json
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            # Windows: 使用 PowerShell 正则替换
+            powershell -Command "(Get-Content anystorage-app/package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content anystorage-app/package.json"
+            powershell -Command "(Get-Content anystorage-app/release/app/package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content anystorage-app/release/app/package.json"
+          else
+            # macOS/Linux: 使用 jq 精确修改 JSON
+            jq --arg version "$VERSION" '.version = $version' anystorage-app/package.json > anystorage-app/package.json.tmp
+            mv anystorage-app/package.json.tmp anystorage-app/package.json
+
+            jq --arg version "$VERSION" '.version = $version' anystorage-app/release/app/package.json > anystorage-app/release/app/package.json.tmp
+            mv anystorage-app/release/app/package.json.tmp anystorage-app/release/app/package.json
+          fi
+
+          echo "✅ Updated version to $VERSION in:"
+          echo "   - anystorage-app/package.json"
+          echo "   - anystorage-app/release/app/package.json"
+
+      - name: Verify version update
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            # Windows: 使用 PowerShell 读取 JSON
+            MAIN_VERSION=$(powershell -Command "(Get-Content anystorage-app/package.json | ConvertFrom-Json).version")
+            APP_VERSION=$(powershell -Command "(Get-Content anystorage-app/release/app/package.json | ConvertFrom-Json).version")
+          else
+            # macOS/Linux: 使用 jq
+            MAIN_VERSION=$(jq -r '.version' anystorage-app/package.json)
+            APP_VERSION=$(jq -r '.version' anystorage-app/release/app/package.json)
+          fi
+
+          echo "📋 Version check:"
+          echo "   Expected:              $VERSION"
+          echo "   package.json:          $MAIN_VERSION"
+          echo "   release/app/package.json: $APP_VERSION"
+
+          if [ "$MAIN_VERSION" != "$VERSION" ] || [ "$APP_VERSION" != "$VERSION" ]; then
+            echo "❌ Version update failed! Versions do not match."
+            exit 1
+          fi
+
+          echo "✅ Version verification passed"
+
       - name: Install dependencies
         shell: bash
         run: |
