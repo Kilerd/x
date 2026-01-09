@@ -139,20 +139,20 @@ jobs:
 
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             # Windows: 使用 PowerShell 正则替换
-            powershell -Command "(Get-Content anystorage-app/package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content anystorage-app/package.json"
-            powershell -Command "(Get-Content anystorage-app/release/app/package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content anystorage-app/release/app/package.json"
+            powershell -Command "(Get-Content package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content package.json"
+            powershell -Command "(Get-Content release/app/package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content release/app/package.json"
           else
             # macOS/Linux: 使用 jq 精确修改 JSON
-            jq --arg version "$VERSION" '.version = $version' anystorage-app/package.json > anystorage-app/package.json.tmp
-            mv anystorage-app/package.json.tmp anystorage-app/package.json
+            jq --arg version "$VERSION" '.version = $version' package.json > package.json.tmp
+            mv package.json.tmp package.json
 
-            jq --arg version "$VERSION" '.version = $version' anystorage-app/release/app/package.json > anystorage-app/release/app/package.json.tmp
-            mv anystorage-app/release/app/package.json.tmp anystorage-app/release/app/package.json
+            jq --arg version "$VERSION" '.version = $version' release/app/package.json > release/app/package.json.tmp
+            mv release/app/package.json.tmp release/app/package.json
           fi
 
           echo "✅ Updated version to $VERSION in:"
-          echo "   - anystorage-app/package.json"
-          echo "   - anystorage-app/release/app/package.json"
+          echo "   - package.json"
+          echo "   - release/app/package.json"
 
       - name: Verify version update
         shell: bash
@@ -161,12 +161,12 @@ jobs:
 
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             # Windows: 使用 PowerShell 读取 JSON
-            MAIN_VERSION=$(powershell -Command "(Get-Content anystorage-app/package.json | ConvertFrom-Json).version")
-            APP_VERSION=$(powershell -Command "(Get-Content anystorage-app/release/app/package.json | ConvertFrom-Json).version")
+            MAIN_VERSION=$(powershell -Command "(Get-Content package.json | ConvertFrom-Json).version")
+            APP_VERSION=$(powershell -Command "(Get-Content release/app/package.json | ConvertFrom-Json).version")
           else
             # macOS/Linux: 使用 jq
-            MAIN_VERSION=$(jq -r '.version' anystorage-app/package.json)
-            APP_VERSION=$(jq -r '.version' anystorage-app/release/app/package.json)
+            MAIN_VERSION=$(jq -r '.version' package.json)
+            APP_VERSION=$(jq -r '.version' release/app/package.json)
           fi
 
           echo "📋 Version check:"
