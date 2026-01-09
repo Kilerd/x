@@ -137,18 +137,16 @@ jobs:
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
 
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            # Windows: 使用 PowerShell 正则替换
-            powershell -Command "(Get-Content package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content package.json"
-            powershell -Command "(Get-Content release/app/package.json) -replace '\"version\": \"[^\"]*\"', '\"version\": \"$VERSION\"' | Set-Content release/app/package.json"
-          else
-            # macOS/Linux: 使用 jq 精确修改 JSON
-            jq --arg version "$VERSION" '.version = $version' package.json > package.json.tmp
-            mv package.json.tmp package.json
+          # 统一使用 jq 精确修改 JSON（避免 PowerShell 正则替换多个 version）
+          echo "📝 Updating version to $VERSION"
 
-            jq --arg version "$VERSION" '.version = $version' release/app/package.json > release/app/package.json.tmp
-            mv release/app/package.json.tmp release/app/package.json
-          fi
+          # Update main package.json
+          jq --arg version "$VERSION" '.version = $version' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+          # Update release/app/package.json
+          jq --arg version "$VERSION" '.version = $version' release/app/package.json > release/app/package.json.tmp
+          mv release/app/package.json.tmp release/app/package.json
 
           echo "✅ Updated version to $VERSION in:"
           echo "   - package.json"
