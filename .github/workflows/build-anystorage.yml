@@ -200,14 +200,43 @@ jobs:
 
       - name: Build application
         run: npm run build
+
+      # 诊断证书信息 (macOS only)
+      - name: Verify certificate information (macOS only)
+        if: matrix.platform == 'mac'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS 代码签名和公证环境变量
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          echo "🔍 Verifying certificate contents..."
+
+          # Decode certificate to temporary file
+          CERT_PATH=/tmp/cert.p12
+          echo "$CSC_LINK" | base64 -D > $CERT_PATH
+
+          if [ ! -f "$CERT_PATH" ]; then
+            echo "❌ Failed to decode certificate"
+            exit 1
+          fi
+
+          CERT_SIZE=$(stat -f%z "$CERT_PATH")
+          echo "✅ Certificate file size: $CERT_SIZE bytes"
+
+          # Extract certificate info without importing
+          echo ""
+          echo "📋 Certificate details:"
+          openssl pkcs12 -in $CERT_PATH -passin pass:"$CSC_KEY_PASSWORD" -nokeys -clcerts 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName 2>/dev/null || echo "Failed to read certificate details"
+
+          echo ""
+          echo "🔑 Checking if private key is present:"
+          openssl pkcs12 -in $CERT_PATH -passin pass:"$CSC_KEY_PASSWORD" -nocerts -nodes 2>/dev/null | grep "BEGIN PRIVATE KEY" && echo "✅ Private key found" || echo "❌ Private key not found"
+
+          # Clean up
+          rm -f $CERT_PATH
+
+          echo ""
+          echo "ℹ️  CSC_LINK length: ${#CSC_LINK} characters"
+          echo "ℹ️  CSC_KEY_PASSWORD is set: $([ -n "$CSC_KEY_PASSWORD" ] && echo 'Yes' || echo 'No')"
 
       - name: Package application
         env:
