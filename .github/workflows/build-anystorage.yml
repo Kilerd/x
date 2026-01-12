@@ -198,106 +198,16 @@ jobs:
           npm install ${{ matrix.opendal_package }}@0.49.2
           echo "✅ Installed ${{ matrix.opendal_package }}"
 
-      # macOS 代码签名配置
-      - name: Import Apple certificate (macOS only)
-        if: matrix.platform == 'mac'
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          echo "🔐 Starting certificate import process..."
-
-          # Create variables
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-
-          echo "📁 Certificate path: $CERTIFICATE_PATH"
-          echo "🔑 Keychain path: $KEYCHAIN_PATH"
-
-          # Decode certificate (macOS 使用 -D 而不是 --decode)
-          echo "📦 Decoding certificate from base64..."
-          echo "$CSC_LINK" | base64 -D > $CERTIFICATE_PATH
-
-          if [ -f "$CERTIFICATE_PATH" ]; then
-            CERT_SIZE=$(stat -f%z "$CERTIFICATE_PATH")
-            echo "✅ Certificate decoded successfully (size: $CERT_SIZE bytes)"
-          else
-            echo "❌ Certificate file not found after decode!"
-            exit 1
-          fi
-
-          # Create temporary keychain
-          echo "🔨 Creating temporary keychain..."
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          echo "✅ Keychain created"
-
-          echo "⚙️  Configuring keychain settings..."
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          echo "✅ Keychain settings configured"
-
-          echo "🔓 Unlocking keychain..."
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          echo "✅ Keychain unlocked"
-
-          # Import certificate to keychain
-          echo "📥 Importing certificate to keychain..."
-          # 使用 -T 允许 codesign 和 security 访问证书
-          security import $CERTIFICATE_PATH \
-            -P "$CSC_KEY_PASSWORD" \
-            -A \
-            -t cert \
-            -f pkcs12 \
-            -k $KEYCHAIN_PATH \
-            -T /usr/bin/codesign \
-            -T /usr/bin/security
-
-          IMPORT_RESULT=$?
-          if [ $IMPORT_RESULT -eq 0 ]; then
-            echo "✅ Certificate imported successfully"
-          else
-            echo "❌ Certificate import failed with exit code: $IMPORT_RESULT"
-            exit 1
-          fi
-
-          # 设置 keychain 分区列表（允许应用访问私钥）
-          echo "🔧 Setting keychain partition list..."
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          echo "✅ Partition list configured"
-
-          # 显示当前 keychains
-          echo "📋 Current keychains before update:"
-          security list-keychains -d user
-
-          # 将新 keychain 添加到搜索列表（保留现有的 keychains）
-          echo "🔗 Adding keychain to search list..."
-          security list-keychains -d user -s $KEYCHAIN_PATH $(security list-keychains -d user | sed s/\"//g)
-
-          echo "📋 Current keychains after update:"
-          security list-keychains -d user
-
-          # 设置默认 keychain 为新创建的 keychain
-          echo "🎯 Setting default keychain..."
-          security default-keychain -s $KEYCHAIN_PATH
-
-          echo "📋 Default keychain:"
-          security default-keychain
-
-          # Verify certificate
-          echo ""
-          echo "🔍 Verifying certificate in new keychain..."
-          security find-identity -v -p codesigning $KEYCHAIN_PATH
-
-          # 显示所有 codesigning identities
-          echo ""
-          echo "🔍 All codesigning identities (from all keychains):"
-          security find-identity -v -p codesigning
-
-          echo ""
-          echo "✅ Certificate import process completed"
-
       - name: Build application
         run: npm run build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS 代码签名和公证环境变量
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
       - name: Package application
         env:
@@ -317,16 +227,6 @@ jobs:
             npm exec electron-builder -- --linux --${{ matrix.electron_arch }} --publish never
           fi
         shell: bash
-
-      # 清理 macOS 钥匙串
-      - name: Clean up keychain (macOS only)
-        if: always() && matrix.platform == 'mac'
-        run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          if [ -f "$KEYCHAIN_PATH" ]; then
-            security delete-keychain $KEYCHAIN_PATH
-            echo "✅ Keychain cleaned up"
-          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
