@@ -108,13 +108,13 @@ jobs:
       matrix:
         include:
           # macOS Apple Silicon
-          - platform: 'macos-14'
+          - platform: 'macos-latest'
             os_label: 'mac'
             arch: 'aarch64'
             target: 'aarch64-apple-darwin'
             skip_on_beta: false
           # macOS Intel
-          - platform: 'macos-13'
+          - platform: 'macos-15-intel'
             os_label: 'mac'
             arch: 'x86_64'
             target: 'x86_64-apple-darwin'
@@ -271,19 +271,20 @@ jobs:
       - name: Extract Certificate Identity
         if: steps.should_skip.outputs.skip != 'true' && runner.os == 'macOS'
         run: |
-          # 从钥匙链中查找证书 Identity
-          CERT_ID=$(security find-identity -v -p codesigning build.keychain | \
+          # 从钥匙链中查找证书完整名称（而不是 SHA-1 哈希）
+          CERT_NAME=$(security find-identity -v -p codesigning build.keychain | \
             grep "Developer ID Application" | \
             head -1 | \
-            awk '{print $2}')
+            sed -n 's/.*"\(.*\)"/\1/p')
 
-          if [ -z "$CERT_ID" ]; then
+          if [ -z "$CERT_NAME" ]; then
             echo "❌ Failed to extract certificate identity"
+            security find-identity -v -p codesigning build.keychain
             exit 1
           fi
 
-          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> $GITHUB_ENV
-          echo "✅ Certificate Identity: $CERT_ID"
+          echo "APPLE_SIGNING_IDENTITY=$CERT_NAME" >> $GITHUB_ENV
+          echo "✅ Certificate Identity: $CERT_NAME"
 
       - name: Build Tauri application
         if: steps.should_skip.outputs.skip != 'true'
