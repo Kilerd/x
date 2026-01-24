@@ -313,6 +313,33 @@ jobs:
           includeUpdaterJson: false
           updaterJsonKeepUniversal: false
 
+      # Rename macOS .app.tar.gz to include architecture
+      - name: Rename macOS artifacts to include architecture
+        if: steps.should_skip.outputs.skip != 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          # 查找 .app.tar.gz 文件
+          APP_TAR=$(find "$BUNDLE_DIR" -name "*.app.tar.gz" -not -name "*_${{ matrix.arch }}.app.tar.gz" | head -1)
+
+          if [ -n "$APP_TAR" ]; then
+            # 提取文件名和目录
+            DIR=$(dirname "$APP_TAR")
+            BASENAME=$(basename "$APP_TAR" .app.tar.gz)
+
+            # 重命名为包含架构的名称
+            NEW_NAME="${BASENAME}_${{ matrix.arch }}.app.tar.gz"
+            mv "$APP_TAR" "$DIR/$NEW_NAME"
+
+            # 同时重命名签名文件
+            if [ -f "${APP_TAR}.sig" ]; then
+              mv "${APP_TAR}.sig" "$DIR/${NEW_NAME}.sig"
+            fi
+
+            echo "✅ Renamed: $(basename $APP_TAR) → $NEW_NAME"
+          fi
+
       - name: Upload artifacts
         if: steps.should_skip.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
