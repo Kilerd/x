@@ -82,7 +82,7 @@ jobs:
           echo "sha=$SHA" >> $GITHUB_OUTPUT
 
           # 显示构建信息
-          echo "📦 Building AnyStorage $VERSION"
+          echo "📦 Building AnyStorage Tauri $VERSION"
           echo "🏷️  Tag: $TAG"
           echo "🔖 Prerelease: $IS_PRERELEASE"
           echo "📍 Ref: $REF"
@@ -99,20 +99,17 @@ jobs:
           - os: macos-14
             platform: mac
             arch: arm64
-            opendal_package: '@opendal/lib-darwin-arm64'
-            electron_arch: arm64
+            target: aarch64-apple-darwin
           # Windows x64
           - os: windows-latest
             platform: win
             arch: x64
-            opendal_package: '@opendal/lib-win32-x64-msvc'
-            electron_arch: x64
+            target: x86_64-pc-windows-msvc
           # Linux x64
           - os: ubuntu-latest
             platform: linux
             arch: x64
-            opendal_package: '@opendal/lib-linux-x64-gnu'
-            electron_arch: x64
+            target: x86_64-unknown-linux-gnu
 
     steps:
       - name: Checkout private repository
@@ -127,79 +124,73 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: anystorage-tauri/package-lock.json
 
-      # 在构建前自动将 tag 版本号写入 package.json
-      # 这样就无需在开发时手动同步版本号
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      # 在构建前自动将 tag 版本号写入 tauri.conf.json
+      # 开发环境保持 0.1.0，发版时动态设置正确版本
       - name: Install jq (Windows only)
         if: runner.os == 'Windows'
         shell: pwsh
         run: choco install jq -y
 
-      - name: Update version in package.json
+      - name: Update version in tauri.conf.json
         shell: bash
+        working-directory: anystorage-tauri
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
 
-          # 统一使用 jq 精确修改 JSON（避免 PowerShell 正则替换多个 version）
-          echo "📝 Updating version to $VERSION"
+          echo "📝 Updating Tauri version to $VERSION"
 
-          # Update main package.json
-          jq --arg version "$VERSION" '.version = $version' package.json > package.json.tmp
-          mv package.json.tmp package.json
+          # Update tauri.conf.json
+          jq --arg version "$VERSION" '.version = $version' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
 
-          # Update release/app/package.json
-          jq --arg version "$VERSION" '.version = $version' release/app/package.json > release/app/package.json.tmp
-          mv release/app/package.json.tmp release/app/package.json
-
-          echo "✅ Updated version to $VERSION in:"
-          echo "   - package.json"
-          echo "   - release/app/package.json"
+          echo "✅ Updated version to $VERSION in src-tauri/tauri.conf.json"
 
       - name: Verify version update
         shell: bash
+        working-directory: anystorage-tauri
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
 
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             # Windows: 使用 PowerShell 读取 JSON
-            MAIN_VERSION=$(powershell -Command "(Get-Content package.json | ConvertFrom-Json).version")
-            APP_VERSION=$(powershell -Command "(Get-Content release/app/package.json | ConvertFrom-Json).version")
+            TAURI_VERSION=$(powershell -Command "(Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version")
           else
             # macOS/Linux: 使用 jq
-            MAIN_VERSION=$(jq -r '.version' package.json)
-            APP_VERSION=$(jq -r '.version' release/app/package.json)
+            TAURI_VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
           fi
 
           echo "📋 Version check:"
-          echo "   Expected:              $VERSION"
-          echo "   package.json:          $MAIN_VERSION"
-          echo "   release/app/package.json: $APP_VERSION"
+          echo "   Expected:                  $VERSION"
+          echo "   src-tauri/tauri.conf.json: $TAURI_VERSION"
 
-          if [ "$MAIN_VERSION" != "$VERSION" ] || [ "$APP_VERSION" != "$VERSION" ]; then
-            echo "❌ Version update failed! Versions do not match."
+          if [ "$TAURI_VERSION" != "$VERSION" ]; then
+            echo "❌ Version update failed! Tauri version does not match."
             exit 1
           fi
 
           echo "✅ Version verification passed"
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          # Clean both package-lock files to avoid npm optional dependencies bug (#4828)
-          # This ensures @opendal/lib-* packages are correctly installed
-          npm install
-          npm run postinstall
-
-      - name: Install platform-specific OpenDAL binding
-        shell: bash
-        run: |
-          npm install ${{ matrix.opendal_package }}@0.49.2
-          cd release/app
-          npm install ${{ matrix.opendal_package }}@0.49.2
-          echo "✅ Installed ${{ matrix.opendal_package }}"
-
-      - name: Build application
-        run: npm run build
+      - name: Install frontend dependencies
+        working-directory: anystorage-tauri
+        run: npm install
 
       # 诊断证书信息 (macOS only)
       - name: Verify certificate information (macOS only)
@@ -238,36 +229,31 @@ jobs:
           echo "ℹ️  CSC_LINK length: ${#CSC_LINK} characters"
           echo "ℹ️  CSC_KEY_PASSWORD is set: $([ -n "$CSC_KEY_PASSWORD" ] && echo 'Yes' || echo 'No')"
 
-      - name: Package application
+      - name: Build Tauri application
+        working-directory: anystorage-tauri
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # macOS 代码签名和公证环境变量
           APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ "${{ matrix.platform }}" = "mac" ]; then
-            npm exec electron-builder -- --mac --${{ matrix.electron_arch }} --publish never
-          elif [ "${{ matrix.platform }}" = "win" ]; then
-            npm exec electron-builder -- --win --${{ matrix.electron_arch }} --publish never
-          else
-            npm exec electron-builder -- --linux --${{ matrix.electron_arch }} --publish never
-          fi
-        shell: bash
+          npm run tauri:build -- --target ${{ matrix.target }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            release/build/*.dmg
-            release/build/*.exe
-            release/build/*.AppImage
-            release/build/*.zip
-            release/build/latest*.yml
-            release/build/*.yaml
+            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz
+            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
           retention-days: 7
           if-no-files-found: error
 
@@ -297,12 +283,12 @@ jobs:
           body: |
             # AnyStorage ${{ needs.prepare.outputs.version }}
 
-            Release artifacts for AnyStorage.
+            Release artifacts for AnyStorage (Tauri).
 
             **Platforms:**
             - macOS Apple Silicon (ARM64)
             - Windows x64
-            - Linux x64 (AppImage)
+            - Linux x64 (AppImage, Deb)
 
             ## Download
 
@@ -311,13 +297,12 @@ jobs:
             For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release).
 
           files: |
-            artifacts/release-mac-arm64/*.dmg
-            artifacts/release-mac-arm64/*.zip
-            artifacts/release-mac-arm64/latest*.yml
-            artifacts/release-win-x64/*.exe
-            artifacts/release-win-x64/latest*.yml
-            artifacts/release-linux-x64/*.AppImage
-            artifacts/release-linux-x64/latest*.yml
+            artifacts/release-mac-arm64/**/*.dmg
+            artifacts/release-mac-arm64/**/*.app.tar.gz
+            artifacts/release-win-x64/**/*.msi
+            artifacts/release-win-x64/**/*.exe
+            artifacts/release-linux-x64/**/*.AppImage
+            artifacts/release-linux-x64/**/*.deb
           overwrite_files: true
 
       - name: Release complete
