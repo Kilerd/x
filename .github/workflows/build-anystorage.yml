@@ -39,6 +39,7 @@ jobs:
       is_prerelease: ${{ steps.extract.outputs.is_prerelease }}
       ref: ${{ steps.extract.outputs.ref }}
       sha: ${{ steps.extract.outputs.sha }}
+      is_beta: ${{ steps.extract.outputs.is_beta }}
     steps:
       - name: Extract payload data
         id: extract
@@ -74,17 +75,27 @@ jobs:
             echo "🔗 Repository dispatch trigger"
           fi
 
+          # 检查是否为 beta 版本
+          if [[ "$VERSION" == *"beta"* ]]; then
+            IS_BETA="true"
+            echo "⚠️  Beta version detected - Windows build will be skipped"
+          else
+            IS_BETA="false"
+          fi
+
           # 输出到 GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
           echo "ref=$REF" >> $GITHUB_OUTPUT
           echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "is_beta=$IS_BETA" >> $GITHUB_OUTPUT
 
           # 显示构建信息
           echo "📦 Building AnyStorage Tauri $VERSION"
           echo "🏷️  Tag: $TAG"
           echo "🔖 Prerelease: $IS_PRERELEASE"
+          echo "🔖 Beta: $IS_BETA"
           echo "📍 Ref: $REF"
           echo "📍 SHA: $SHA"
 
@@ -100,19 +111,33 @@ jobs:
             platform: mac
             arch: arm64
             target: aarch64-apple-darwin
+            skip_on_beta: false
           # Windows x64
           - os: windows-latest
             platform: win
             arch: x64
             target: x86_64-pc-windows-msvc
+            skip_on_beta: true
           # Linux x64
           - os: ubuntu-latest
             platform: linux
             arch: x64
             target: x86_64-unknown-linux-gnu
+            skip_on_beta: false
 
     steps:
+      - name: Check if build should be skipped
+        id: should_skip
+        run: |
+          if [[ "${{ matrix.skip_on_beta }}" == "true" && "${{ needs.prepare.outputs.is_beta }}" == "true" ]]; then
+            echo "⚠️  Skipping Windows build for beta version"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout private repository
+        if: steps.should_skip.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           repository: kilerd/anystorage-tauri
@@ -120,18 +145,20 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
       - name: Setup Node.js
+        if: steps.should_skip.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
       - name: Setup Rust
+        if: steps.should_skip.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+        if: steps.should_skip.outputs.skip != 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -144,11 +171,12 @@ jobs:
       # 在构建前自动将 tag 版本号写入 tauri.conf.json
       # 开发环境保持 0.1.0，发版时动态设置正确版本
       - name: Install jq (Windows only)
-        if: runner.os == 'Windows'
+        if: steps.should_skip.outputs.skip != 'true' && runner.os == 'Windows'
         shell: pwsh
         run: choco install jq -y
 
       - name: Update version in tauri.conf.json
+        if: steps.should_skip.outputs.skip != 'true'
         shell: bash
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
@@ -162,6 +190,7 @@ jobs:
           echo "✅ Updated version to $VERSION in src-tauri/tauri.conf.json"
 
       - name: Verify version update
+        if: steps.should_skip.outputs.skip != 'true'
         shell: bash
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
@@ -186,11 +215,12 @@ jobs:
           echo "✅ Version verification passed"
 
       - name: Install frontend dependencies
+        if: steps.should_skip.outputs.skip != 'true'
         run: npm install
 
       # 诊断证书信息 (macOS only)
       - name: Verify certificate information (macOS only)
-        if: matrix.platform == 'mac'
+        if: steps.should_skip.outputs.skip != 'true' && matrix.platform == 'mac'
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -226,6 +256,7 @@ jobs:
           echo "ℹ️  CSC_KEY_PASSWORD is set: $([ -n "$CSC_KEY_PASSWORD" ] && echo 'Yes' || echo 'No')"
 
       - name: Build Tauri application
+        if: steps.should_skip.outputs.skip != 'true'
         env:
           # macOS 代码签名和公证环境变量
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -239,6 +270,7 @@ jobs:
           npm run tauri:build -- --target ${{ matrix.target }}
 
       - name: Upload artifacts
+        if: steps.should_skip.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
@@ -265,18 +297,29 @@ jobs:
       - name: Display structure
         run: ls -R artifacts
 
-      - name: Create GitHub Release in anystorage-release repository
-        uses: softprops/action-gh-release@v2
-        with:
-          name: AnyStorage ${{ needs.prepare.outputs.version }}
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          repository: kilerd/anystorage-release
-          token: ${{ secrets.RELEASE_REPO_TOKEN }}
-          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
-          draft: false
-          generate_release_notes: false
-          body: |
-            # AnyStorage ${{ needs.prepare.outputs.version }}
+      - name: Prepare release body
+        id: release_body
+        run: |
+          IS_BETA="${{ needs.prepare.outputs.is_beta }}"
+
+          if [ "$IS_BETA" == "true" ]; then
+            BODY="# AnyStorage ${{ needs.prepare.outputs.version }}
+
+            Release artifacts for AnyStorage (Tauri).
+
+            **Platforms:**
+            - macOS Apple Silicon (ARM64)
+            - Linux x64 (AppImage, Deb)
+
+            ⚠️ **Note:** Windows build is not available for beta versions.
+
+            ## Download
+
+            Download the appropriate installer for your platform below.
+
+            For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
+          else
+            BODY="# AnyStorage ${{ needs.prepare.outputs.version }}
 
             Release artifacts for AnyStorage (Tauri).
 
@@ -289,18 +332,49 @@ jobs:
 
             Download the appropriate installer for your platform below.
 
-            For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release).
+            For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
+          fi
 
-          files: |
-            artifacts/release-mac-arm64/**/*.dmg
-            artifacts/release-mac-arm64/**/*.app.tar.gz
-            artifacts/release-win-x64/**/*.msi
-            artifacts/release-win-x64/**/*.exe
-            artifacts/release-linux-x64/**/*.AppImage
-            artifacts/release-linux-x64/**/*.deb
-          overwrite_files: true
+          # 使用多行输出
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Collect artifacts (non-beta)
+        if: needs.prepare.outputs.is_beta != 'true'
+        run: |
+          mkdir -p release-files
+          find artifacts/release-mac-arm64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" \) -exec cp {} release-files/ \; 2>/dev/null || true
+          find artifacts/release-win-x64/ -type f \( -name "*.msi" -o -name "*.exe" \) -exec cp {} release-files/ \; 2>/dev/null || true
+          find artifacts/release-linux-x64/ -type f \( -name "*.AppImage" -o -name "*.deb" \) -exec cp {} release-files/ \; 2>/dev/null || true
+          ls -lh release-files/
+
+      - name: Collect artifacts (beta - no Windows)
+        if: needs.prepare.outputs.is_beta == 'true'
+        run: |
+          mkdir -p release-files
+          find artifacts/release-mac-arm64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" \) -exec cp {} release-files/ \; 2>/dev/null || true
+          find artifacts/release-linux-x64/ -type f \( -name "*.AppImage" -o -name "*.deb" \) -exec cp {} release-files/ \; 2>/dev/null || true
+          ls -lh release-files/
+
+      - name: Create GitHub Release in anystorage-release repository
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AnyStorage ${{ needs.prepare.outputs.version }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          repository: kilerd/anystorage-release
+          token: ${{ secrets.RELEASE_REPO_TOKEN }}
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          draft: false
+          generate_release_notes: false
+          body: ${{ steps.release_body.outputs.body }}
+          files: release-files/*
+          fail_on_unmatched_files: true
 
       - name: Release complete
         run: |
           echo "✅ Release ${{ needs.prepare.outputs.tag }} published to anystorage-release repository"
           echo "🔗 https://github.com/kilerd/anystorage-release/releases/tag/${{ needs.prepare.outputs.tag }}"
+          if [ "${{ needs.prepare.outputs.is_beta }}" == "true" ]; then
+            echo "⚠️  Beta version: Windows build was skipped"
+          fi
