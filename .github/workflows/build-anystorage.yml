@@ -150,7 +150,6 @@ jobs:
 
       - name: Update version in tauri.conf.json
         shell: bash
-        working-directory: anystorage-tauri
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
 
@@ -164,7 +163,6 @@ jobs:
 
       - name: Verify version update
         shell: bash
-        working-directory: anystorage-tauri
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
 
@@ -188,7 +186,6 @@ jobs:
           echo "✅ Version verification passed"
 
       - name: Install frontend dependencies
-        working-directory: anystorage-tauri
         run: npm install
 
       # 诊断证书信息 (macOS only)
@@ -229,7 +226,6 @@ jobs:
           echo "ℹ️  CSC_KEY_PASSWORD is set: $([ -n "$CSC_KEY_PASSWORD" ] && echo 'Yes' || echo 'No')"
 
       - name: Build Tauri application
-        working-directory: anystorage-tauri
         env:
           # macOS 代码签名和公证环境变量
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -247,12 +243,12 @@ jobs:
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz
-            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
-            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
-            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
-            anystorage-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
           retention-days: 7
           if-no-files-found: error
 
