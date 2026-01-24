@@ -115,7 +115,7 @@ jobs:
       - name: Checkout private repository
         uses: actions/checkout@v4
         with:
-          repository: kilerd/anystorage
+          repository: kilerd/anystorage-tauri
           ref: ${{ needs.prepare.outputs.ref }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
