@@ -101,28 +101,35 @@ jobs:
 
   build:
     needs: prepare
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform }}
 
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # macOS Apple Silicon (arm64 only)
-          - os: macos-14
-            platform: mac
-            arch: arm64
-            target: aarch64-apple-darwin
+          # macOS Apple Silicon
+          - platform: 'macos-14'
+            os_label: 'mac'
+            arch: 'aarch64'
+            target: 'aarch64-apple-darwin'
+            skip_on_beta: false
+          # macOS Intel
+          - platform: 'macos-13'
+            os_label: 'mac'
+            arch: 'x86_64'
+            target: 'x86_64-apple-darwin'
             skip_on_beta: false
           # Windows x64
-          - os: windows-latest
-            platform: win
-            arch: x64
-            target: x86_64-pc-windows-msvc
+          - platform: 'windows-latest'
+            os_label: 'win'
+            arch: 'x86_64'
+            target: 'x86_64-pc-windows-msvc'
             skip_on_beta: true
           # Linux x64
-          - os: ubuntu-latest
-            platform: linux
-            arch: x64
-            target: x86_64-unknown-linux-gnu
+          - platform: 'ubuntu-22.04'
+            os_label: 'linux'
+            arch: 'x86_64'
+            target: 'x86_64-unknown-linux-gnu'
             skip_on_beta: false
 
     steps:
@@ -157,6 +164,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        if: steps.should_skip.outputs.skip != 'true'
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
 
       - name: Install Linux dependencies
         if: steps.should_skip.outputs.skip != 'true' && runner.os == 'Linux'
@@ -219,74 +232,233 @@ jobs:
         if: steps.should_skip.outputs.skip != 'true'
         run: npm install
 
-      # 诊断证书信息 (macOS only)
-      - name: Verify certificate information (macOS only)
-        if: steps.should_skip.outputs.skip != 'true' && matrix.platform == 'mac'
+      # macOS 代码签名：导入证书到钥匙链
+      - name: Import Apple Developer Certificate
+        if: steps.should_skip.outputs.skip != 'true' && runner.os == 'macOS'
         env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          echo "🔍 Verifying certificate contents..."
+          echo "🔐 Importing Apple Developer Certificate..."
 
-          # Decode certificate to temporary file
-          CERT_PATH=/tmp/cert.p12
-          echo "$CSC_LINK" | base64 -D > $CERT_PATH
+          # 解码证书
+          echo $APPLE_CERTIFICATE | base64 --decode > certificate.p12
 
-          if [ ! -f "$CERT_PATH" ]; then
-            echo "❌ Failed to decode certificate"
+          # 创建临时钥匙链
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+          # 导入证书
+          security import certificate.p12 -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          # 允许 codesign 使用证书
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+          # 清理证书文件
+          rm certificate.p12
+
+          echo "✅ Certificate imported successfully"
+
+      # macOS 代码签名：提取证书 Identity
+      - name: Extract Certificate Identity
+        if: steps.should_skip.outputs.skip != 'true' && runner.os == 'macOS'
+        run: |
+          # 从钥匙链中查找证书 Identity
+          CERT_ID=$(security find-identity -v -p codesigning build.keychain | \
+            grep "Developer ID Application" | \
+            head -1 | \
+            awk '{print $2}')
+
+          if [ -z "$CERT_ID" ]; then
+            echo "❌ Failed to extract certificate identity"
             exit 1
           fi
 
-          CERT_SIZE=$(stat -f%z "$CERT_PATH")
-          echo "✅ Certificate file size: $CERT_SIZE bytes"
-
-          # Extract certificate info without importing
-          echo ""
-          echo "📋 Certificate details:"
-          openssl pkcs12 -in $CERT_PATH -passin pass:"$CSC_KEY_PASSWORD" -nokeys -clcerts 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName 2>/dev/null || echo "Failed to read certificate details"
-
-          echo ""
-          echo "🔑 Checking if private key is present:"
-          openssl pkcs12 -in $CERT_PATH -passin pass:"$CSC_KEY_PASSWORD" -nocerts -nodes 2>/dev/null | grep "BEGIN PRIVATE KEY" && echo "✅ Private key found" || echo "❌ Private key not found"
-
-          # Clean up
-          rm -f $CERT_PATH
-
-          echo ""
-          echo "ℹ️  CSC_LINK length: ${#CSC_LINK} characters"
-          echo "ℹ️  CSC_KEY_PASSWORD is set: $([ -n "$CSC_KEY_PASSWORD" ] && echo 'Yes' || echo 'No')"
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> $GITHUB_ENV
+          echo "✅ Certificate Identity: $CERT_ID"
 
       - name: Build Tauri application
         if: steps.should_skip.outputs.skip != 'true'
+        uses: tauri-apps/tauri-action@v0
         env:
-          # macOS 代码签名和公证环境变量
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri updater 签名
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS 代码签名和公证
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          npm run tauri:build -- --target ${{ matrix.target }}
+        with:
+          projectPath: '.'
+          args: '--target ${{ matrix.target }}'
+          # 不直接发布到 release，只生成构建产物
+          tagName: ''
+          releaseName: ''
+          releaseBody: ''
+          releaseDraft: true
+          # Updater 配置
+          includeUpdaterJson: false
+          updaterJsonKeepUniversal: false
 
       - name: Upload artifacts
         if: steps.should_skip.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          name: release-${{ matrix.os_label }}-${{ matrix.arch }}
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz.sig
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi.sig
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe.sig
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage.sig
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb.sig
           retention-days: 7
           if-no-files-found: error
 
-  release:
+  generate-updater-json:
     needs: [prepare, build]
+    runs-on: ubuntu-latest
+    outputs:
+      updater_json: ${{ steps.generate.outputs.json }}
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Generate Updater JSON
+        id: generate
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          NOTES="Release $VERSION"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          IS_BETA="${{ needs.prepare.outputs.is_beta }}"
+
+          echo "📦 Generating updater JSON for version $VERSION"
+
+          # 初始化 JSON
+          cat > latest.json << 'JSONEOF'
+          {
+            "version": "VERSION_PLACEHOLDER",
+            "notes": "NOTES_PLACEHOLDER",
+            "pub_date": "DATE_PLACEHOLDER",
+            "platforms": {}
+          }
+          JSONEOF
+
+          # 替换占位符
+          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" latest.json
+          sed -i "s/NOTES_PLACEHOLDER/$NOTES/g" latest.json
+          sed -i "s/DATE_PLACEHOLDER/$PUB_DATE/g" latest.json
+
+          # 处理每个平台
+          process_platform() {
+            local os=$1
+            local arch=$2
+            local platform_key="darwin"
+            if [ "$os" = "win" ]; then
+              platform_key="windows"
+            elif [ "$os" = "linux" ]; then
+              platform_key="linux"
+            fi
+            local platform="${platform_key}-${arch}"
+            local artifact_dir="artifacts/release-${os}-${arch}"
+
+            echo "🔍 Processing platform: $platform (artifact_dir: $artifact_dir)"
+
+            if [ ! -d "$artifact_dir" ]; then
+              echo "⚠️  Artifact directory not found: $artifact_dir"
+              return
+            fi
+
+            # 查找安装包和签名
+            INSTALLER=""
+            if [ "$os" = "mac" ]; then
+              INSTALLER=$(find "$artifact_dir" -name "*.app.tar.gz" -not -name "*.sig" 2>/dev/null | head -1)
+            elif [ "$os" = "win" ]; then
+              INSTALLER=$(find "$artifact_dir" -name "*.msi" -o -name "*-setup.exe" 2>/dev/null | grep -v "\.sig$" | head -1)
+            elif [ "$os" = "linux" ]; then
+              INSTALLER=$(find "$artifact_dir" -name "*.AppImage" 2>/dev/null | grep -v "\.sig$" | head -1)
+            fi
+
+            if [ -z "$INSTALLER" ]; then
+              echo "⚠️  No installer found for $platform"
+              ls -la "$artifact_dir" || true
+              return
+            fi
+
+            echo "✅ Found installer: $INSTALLER"
+
+            SIG_FILE="${INSTALLER}.sig"
+
+            if [ ! -f "$SIG_FILE" ]; then
+              echo "❌ Signature file not found: $SIG_FILE"
+              return
+            fi
+
+            # 读取签名内容
+            SIGNATURE=$(cat "$SIG_FILE")
+            FILENAME=$(basename "$INSTALLER")
+            DOWNLOAD_URL="https://github.com/kilerd/anystorage-release/releases/download/${{ needs.prepare.outputs.tag }}/${FILENAME}"
+
+            echo "📝 Adding platform $platform with file $FILENAME"
+
+            # 使用 jq 添加平台信息
+            jq --arg platform "$platform" \
+               --arg url "$DOWNLOAD_URL" \
+               --arg sig "$SIGNATURE" \
+               '.platforms[$platform] = {"signature": $sig, "url": $url}' \
+               latest.json > latest.json.tmp
+            mv latest.json.tmp latest.json
+
+            echo "✅ Added $platform to updater JSON"
+          }
+
+          # 处理所有平台
+          process_platform "mac" "aarch64"
+          process_platform "mac" "x86_64"
+          process_platform "linux" "x86_64"
+
+          # Windows 仅在非 beta 时处理
+          if [ "$IS_BETA" != "true" ]; then
+            process_platform "win" "x86_64"
+          fi
+
+          # 输出最终 JSON
+          echo "📄 Generated updater JSON:"
+          cat latest.json
+
+      - name: Upload updater JSON as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-json
+          path: latest.json
+          retention-days: 7
+
+  release:
+    needs: [prepare, build, generate-updater-json]
     runs-on: ubuntu-latest
 
     steps:
@@ -310,9 +482,14 @@ jobs:
 
             **Platforms:**
             - macOS Apple Silicon (ARM64)
+            - macOS Intel (x86_64)
             - Linux x64 (AppImage, Deb)
 
             ⚠️ **Note:** Windows build is not available for beta versions.
+
+            ## Auto Update
+
+            This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
 
             ## Download
 
@@ -326,8 +503,13 @@ jobs:
 
             **Platforms:**
             - macOS Apple Silicon (ARM64)
+            - macOS Intel (x86_64)
             - Windows x64
             - Linux x64 (AppImage, Deb)
+
+            ## Auto Update
+
+            This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
 
             ## Download
 
@@ -345,17 +527,47 @@ jobs:
         if: needs.prepare.outputs.is_beta != 'true'
         run: |
           mkdir -p release-files
-          find artifacts/release-mac-arm64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" \) -exec cp {} release-files/ \; 2>/dev/null || true
-          find artifacts/release-win-x64/ -type f \( -name "*.msi" -o -name "*.exe" \) -exec cp {} release-files/ \; 2>/dev/null || true
-          find artifacts/release-linux-x64/ -type f \( -name "*.AppImage" -o -name "*.deb" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          echo "📦 Collecting artifacts for all platforms..."
+
+          # macOS ARM64
+          find artifacts/release-mac-aarch64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.sig" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          # macOS Intel
+          find artifacts/release-mac-x86_64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.sig" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          # Windows
+          find artifacts/release-win-x86_64/ -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.sig" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          # Linux
+          find artifacts/release-linux-x86_64/ -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.sig" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          # Updater JSON
+          cp artifacts/updater-json/latest.json release-files/ 2>/dev/null || echo "⚠️  latest.json not found"
+
+          echo "✅ Collected files:"
           ls -lh release-files/
 
       - name: Collect artifacts (beta - no Windows)
         if: needs.prepare.outputs.is_beta == 'true'
         run: |
           mkdir -p release-files
-          find artifacts/release-mac-arm64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" \) -exec cp {} release-files/ \; 2>/dev/null || true
-          find artifacts/release-linux-x64/ -type f \( -name "*.AppImage" -o -name "*.deb" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          echo "📦 Collecting artifacts for beta (no Windows)..."
+
+          # macOS ARM64
+          find artifacts/release-mac-aarch64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.sig" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          # macOS Intel
+          find artifacts/release-mac-x86_64/ -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.sig" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          # Linux
+          find artifacts/release-linux-x86_64/ -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.sig" \) -exec cp {} release-files/ \; 2>/dev/null || true
+
+          # Updater JSON
+          cp artifacts/updater-json/latest.json release-files/ 2>/dev/null || echo "⚠️  latest.json not found"
+
+          echo "✅ Collected files:"
           ls -lh release-files/
 
       - name: Create GitHub Release in anystorage-release repository
