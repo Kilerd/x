@@ -128,6 +128,7 @@ jobs:
     steps:
       - name: Check if build should be skipped
         id: should_skip
+        shell: bash
         run: |
           if [[ "${{ matrix.skip_on_beta }}" == "true" && "${{ needs.prepare.outputs.is_beta }}" == "true" ]]; then
             echo "⚠️  Skipping Windows build for beta version"
