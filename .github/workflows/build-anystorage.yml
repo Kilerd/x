@@ -29,6 +29,10 @@ on:
         description: 'Commit SHA (optional, for tracking)'
         required: false
         type: string
+      release_notes:
+        description: 'Release notes (optional, will read from tag annotation if empty)'
+        required: false
+        type: string
 
 jobs:
   prepare:
@@ -40,6 +44,7 @@ jobs:
       ref: ${{ steps.extract.outputs.ref }}
       sha: ${{ steps.extract.outputs.sha }}
       is_beta: ${{ steps.extract.outputs.is_beta }}
+      release_notes: ${{ steps.get_notes.outputs.release_notes }}
     steps:
       - name: Extract payload data
         id: extract
@@ -52,6 +57,7 @@ jobs:
             IS_PRERELEASE="${{ github.event.inputs.is_prerelease }}"
             REF="${{ github.event.inputs.ref }}"
             SHA="${{ github.event.inputs.sha }}"
+            RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
 
             # 如果 ref 为空，使用 tag 作为 ref
             if [ -z "$REF" ]; then
@@ -71,6 +77,7 @@ jobs:
             IS_PRERELEASE="${{ github.event.client_payload.is_prerelease }}"
             REF="${{ github.event.client_payload.ref }}"
             SHA="${{ github.event.client_payload.sha }}"
+            RELEASE_NOTES="${{ github.event.client_payload.release_notes }}"
 
             echo "🔗 Repository dispatch trigger"
           fi
@@ -91,6 +98,11 @@ jobs:
           echo "sha=$SHA" >> $GITHUB_OUTPUT
           echo "is_beta=$IS_BETA" >> $GITHUB_OUTPUT
 
+          # release_notes 可能是多行，使用 heredoc
+          echo "input_release_notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$RELEASE_NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
           # 显示构建信息
           echo "📦 Building AnyStorage Tauri $VERSION"
           echo "🏷️  Tag: $TAG"
@@ -98,6 +110,46 @@ jobs:
           echo "🔖 Beta: $IS_BETA"
           echo "📍 Ref: $REF"
           echo "📍 SHA: $SHA"
+
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: kilerd/anystorage-tauri
+          ref: ${{ steps.extract.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Get release notes from tag annotation
+        id: get_notes
+        run: |
+          TAG="${{ steps.extract.outputs.tag }}"
+          INPUT_NOTES="${{ steps.extract.outputs.input_release_notes }}"
+
+          # 如果已经提供了 release_notes，直接使用
+          if [ -n "$INPUT_NOTES" ]; then
+            echo "📝 Using provided release notes"
+            echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+            echo "$INPUT_NOTES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 尝试从 tag annotation 读取
+          echo "📝 Reading release notes from tag annotation: $TAG"
+
+          # 获取 tag annotation（跳过第一行的 tag 名称）
+          TAG_MESSAGE=$(git tag -l --format='%(contents)' "$TAG" 2>/dev/null || echo "")
+
+          if [ -n "$TAG_MESSAGE" ]; then
+            echo "✅ Found tag annotation"
+            echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+            echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  No tag annotation found, release notes will be empty"
+            echo "release_notes=" >> $GITHUB_OUTPUT
+          fi
 
   build:
     needs: prepare
@@ -502,48 +554,58 @@ jobs:
         id: release_body
         run: |
           IS_BETA="${{ needs.prepare.outputs.is_beta }}"
+          RELEASE_NOTES="${{ needs.prepare.outputs.release_notes }}"
+
+          # 构建 What's New 部分
+          if [ -n "$RELEASE_NOTES" ]; then
+            WHATS_NEW="## What's New
+
+$RELEASE_NOTES
+
+"
+          else
+            WHATS_NEW=""
+          fi
 
           if [ "$IS_BETA" == "true" ]; then
             BODY="# AnyStorage ${{ needs.prepare.outputs.version }}
 
-            Release artifacts for AnyStorage (Tauri).
+${WHATS_NEW}## Platforms
 
-            **Platforms:**
-            - macOS Apple Silicon (ARM64)
-            - macOS Intel (x86_64)
-            - Linux x64 (AppImage, Deb)
+- macOS Apple Silicon (ARM64)
+- macOS Intel (x86_64)
+- Linux x64 (AppImage, Deb)
 
-            ⚠️ **Note:** Windows build is not available for beta versions.
+⚠️ **Note:** Windows build is not available for beta versions.
 
-            ## Auto Update
+## Auto Update
 
-            This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
+This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
 
-            ## Download
+## Download
 
-            Download the appropriate installer for your platform below.
+Download the appropriate installer for your platform below.
 
-            For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
+For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
           else
             BODY="# AnyStorage ${{ needs.prepare.outputs.version }}
 
-            Release artifacts for AnyStorage (Tauri).
+${WHATS_NEW}## Platforms
 
-            **Platforms:**
-            - macOS Apple Silicon (ARM64)
-            - macOS Intel (x86_64)
-            - Windows x64
-            - Linux x64 (AppImage, Deb)
+- macOS Apple Silicon (ARM64)
+- macOS Intel (x86_64)
+- Windows x64
+- Linux x64 (AppImage, Deb)
 
-            ## Auto Update
+## Auto Update
 
-            This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
+This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
 
-            ## Download
+## Download
 
-            Download the appropriate installer for your platform below.
+Download the appropriate installer for your platform below.
 
-            For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
+For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
           fi
 
           # 使用多行输出
