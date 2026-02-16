@@ -552,65 +552,51 @@ jobs:
 
       - name: Prepare release body
         id: release_body
+        shell: bash
         run: |
           IS_BETA="${{ needs.prepare.outputs.is_beta }}"
           RELEASE_NOTES="${{ needs.prepare.outputs.release_notes }}"
 
-          # 构建 What's New 部分
-          if [ -n "$RELEASE_NOTES" ]; then
-            WHATS_NEW="## What's New
+          # 构建 release body
+          VERSION="${{ needs.prepare.outputs.version }}"
 
-$RELEASE_NOTES
-
-"
-          else
-            WHATS_NEW=""
-          fi
-
-          if [ "$IS_BETA" == "true" ]; then
-            BODY="# AnyStorage ${{ needs.prepare.outputs.version }}
-
-${WHATS_NEW}## Platforms
-
-- macOS Apple Silicon (ARM64)
-- macOS Intel (x86_64)
-- Linux x64 (AppImage, Deb)
-
-⚠️ **Note:** Windows build is not available for beta versions.
-
-## Auto Update
-
-This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
-
-## Download
-
-Download the appropriate installer for your platform below.
-
-For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
-          else
-            BODY="# AnyStorage ${{ needs.prepare.outputs.version }}
-
-${WHATS_NEW}## Platforms
-
-- macOS Apple Silicon (ARM64)
-- macOS Intel (x86_64)
-- Windows x64
-- Linux x64 (AppImage, Deb)
-
-## Auto Update
-
-This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates.
-
-## Download
-
-Download the appropriate installer for your platform below.
-
-For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
-          fi
+          {
+            echo "# AnyStorage $VERSION"
+            echo ""
+            # What's New 部分
+            if [ -n "$RELEASE_NOTES" ]; then
+              echo "## What's New"
+              echo ""
+              echo "$RELEASE_NOTES"
+              echo ""
+            fi
+            echo "## Platforms"
+            echo ""
+            echo "- macOS Apple Silicon (ARM64)"
+            echo "- macOS Intel (x86_64)"
+            if [ "$IS_BETA" != "true" ]; then
+              echo "- Windows x64"
+            fi
+            echo "- Linux x64 (AppImage, Deb)"
+            echo ""
+            if [ "$IS_BETA" == "true" ]; then
+              echo "⚠️ **Note:** Windows build is not available for beta versions."
+              echo ""
+            fi
+            echo "## Auto Update"
+            echo ""
+            echo "This release includes \`latest.json\` for Tauri auto-updater support. Installed apps will automatically detect and download updates."
+            echo ""
+            echo "## Download"
+            echo ""
+            echo "Download the appropriate installer for your platform below."
+            echo ""
+            echo "For more information, visit the [main repository](https://github.com/Kilerd/anystorage-release)."
+          } > /tmp/release_body.md
 
           # 使用多行输出
           echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo "$BODY" >> $GITHUB_OUTPUT
+          cat /tmp/release_body.md >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Collect artifacts (non-beta)
