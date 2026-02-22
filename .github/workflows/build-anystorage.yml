@@ -667,3 +667,17 @@ jobs:
           if [ "${{ needs.prepare.outputs.is_beta }}" == "true" ]; then
             echo "⚠️  Beta version: Windows build was skipped"
           fi
+
+      - name: Sync release to website
+        run: |
+          echo "🔄 Syncing release to website..."
+          HTTP_STATUS=$(curl -s -o /tmp/sync_response.txt -w "%{http_code}" \
+            -X GET "https://anystorage.dev/api/cron/sync-release")
+
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ Website sync completed successfully"
+            cat /tmp/sync_response.txt
+          else
+            echo "⚠️  Website sync returned HTTP $HTTP_STATUS (non-fatal)"
+            cat /tmp/sync_response.txt
+          fi
