@@ -430,28 +430,27 @@ jobs:
       - name: Generate Updater JSON
         id: generate
         shell: bash
+        env:
+          RELEASE_NOTES: ${{ needs.prepare.outputs.release_notes }}
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          NOTES="Release $VERSION"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           IS_BETA="${{ needs.prepare.outputs.is_beta }}"
 
+          # 使用 release notes，若为空则 fallback 到默认值
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="Release $VERSION"
+          fi
+
           echo "📦 Generating updater JSON for version $VERSION"
 
-          # 初始化 JSON
-          cat > latest.json << 'JSONEOF'
-          {
-            "version": "VERSION_PLACEHOLDER",
-            "notes": "NOTES_PLACEHOLDER",
-            "pub_date": "DATE_PLACEHOLDER",
-            "platforms": {}
-          }
-          JSONEOF
-
-          # 替换占位符
-          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" latest.json
-          sed -i "s/NOTES_PLACEHOLDER/$NOTES/g" latest.json
-          sed -i "s/DATE_PLACEHOLDER/$PUB_DATE/g" latest.json
+          # 使用 jq 构建初始 JSON，正确处理多行和特殊字符
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "$RELEASE_NOTES" \
+            --arg pub_date "$PUB_DATE" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: {}}' \
+            > latest.json
 
           # 处理每个平台
           process_platform() {
