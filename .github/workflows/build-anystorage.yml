@@ -48,6 +48,12 @@ jobs:
     steps:
       - name: Extract payload data
         id: extract
+        env:
+          # release notes 是自由文本，必须经 env 传入而不能内插进脚本：
+          # 内插时反引号/美元符会被 shell 当作命令替换执行（v0.2.21 首次
+          # 构建即因 notes 含 `latest.json` 而以 127 失败）
+          INPUT_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+          PAYLOAD_RELEASE_NOTES: ${{ github.event.client_payload.release_notes }}
         run: |
           # 判断触发方式并提取参数
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -57,7 +63,7 @@ jobs:
             IS_PRERELEASE="${{ github.event.inputs.is_prerelease }}"
             REF="${{ github.event.inputs.ref }}"
             SHA="${{ github.event.inputs.sha }}"
-            RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
+            RELEASE_NOTES="$INPUT_RELEASE_NOTES"
 
             # 如果 ref 为空，使用 tag 作为 ref
             if [ -z "$REF" ]; then
@@ -77,7 +83,7 @@ jobs:
             IS_PRERELEASE="${{ github.event.client_payload.is_prerelease }}"
             REF="${{ github.event.client_payload.ref }}"
             SHA="${{ github.event.client_payload.sha }}"
-            RELEASE_NOTES="${{ github.event.client_payload.release_notes }}"
+            RELEASE_NOTES="$PAYLOAD_RELEASE_NOTES"
 
             echo "🔗 Repository dispatch trigger"
           fi
@@ -122,9 +128,11 @@ jobs:
 
       - name: Get release notes from tag annotation
         id: get_notes
+        env:
+          # 同上：自由文本经 env 传入，避免 shell 内插执行反引号
+          INPUT_NOTES: ${{ steps.extract.outputs.input_release_notes }}
         run: |
           TAG="${{ steps.extract.outputs.tag }}"
-          INPUT_NOTES="${{ steps.extract.outputs.input_release_notes }}"
 
           # 如果已经提供了 release_notes，直接使用
           if [ -n "$INPUT_NOTES" ]; then
@@ -552,9 +560,11 @@ jobs:
       - name: Prepare release body
         id: release_body
         shell: bash
+        env:
+          # 同上：自由文本经 env 传入，避免 shell 内插执行反引号
+          RELEASE_NOTES: ${{ needs.prepare.outputs.release_notes }}
         run: |
           IS_BETA="${{ needs.prepare.outputs.is_beta }}"
-          RELEASE_NOTES="${{ needs.prepare.outputs.release_notes }}"
 
           # 构建 release body
           VERSION="${{ needs.prepare.outputs.version }}"
